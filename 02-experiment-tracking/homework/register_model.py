@@ -21,8 +21,7 @@ SPACE = {
     'max_depth': scope.int(hp.quniform('max_depth', 1, 20, 1)),
     'n_estimators': scope.int(hp.quniform('n_estimators', 10, 50, 1)),
     'min_samples_split': scope.int(hp.quniform('min_samples_split', 2, 10, 1)),
-    'min_samples_leaf': scope.int(hp.quniform('min_samples_leaf', 1, 4, 1)),
-    'random_state': 42
+    'min_samples_leaf': scope.int(hp.quniform('min_samples_leaf', 1, 4, 1))
 }
 
 
@@ -40,7 +39,6 @@ def train_and_log_model(data_path, params):
         params = space_eval(SPACE, params)
         rf = RandomForestRegressor(**params)
         rf.fit(X_train, y_train)
-
         # evaluate model on the validation and test sets
         valid_rmse = mean_squared_error(y_valid, rf.predict(X_valid), squared=False)
         mlflow.log_metric("valid_rmse", valid_rmse)
@@ -65,10 +63,15 @@ def run(data_path, log_top):
 
     # select the model with the lowest test RMSE
     experiment = client.get_experiment_by_name(EXPERIMENT_NAME)
-    # best_run = client.search_runs( ...  )[0]
 
-    # register the best model
-    # mlflow.register_model( ... )
+
+    best_run = client.search_runs(experiment_ids=[3], order_by=['metric.test_rmse ASC'])[0]._info.run_id
+
+    mlflow.register_model(
+        model_uri=f"runs:/{best_run}/models",
+        name='random-forest-regressor-best-test-model'
+    )
+
 
 
 if __name__ == '__main__':
