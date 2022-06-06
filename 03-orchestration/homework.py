@@ -3,54 +3,88 @@ import pandas as pd
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
+from datetime import datetime, timedelta
+from prefect import flow, task, get_run_logger
+import mlflow
+import pickle
 
+
+@task
 def read_data(path):
     df = pd.read_parquet(path)
     return df
 
+@task
 def prepare_features(df, categorical, train=True):
+    logger = get_run_logger()
     df['duration'] = df.dropOff_datetime - df.pickup_datetime
     df['duration'] = df.duration.dt.total_seconds() / 60
     df = df[(df.duration >= 1) & (df.duration <= 60)].copy()
 
     mean_duration = df.duration.mean()
     if train:
-        print(f"The mean duration of training is {mean_duration}")
+        logger.info(f"The mean duration of training is {mean_duration}")
     else:
-        print(f"The mean duration of validation is {mean_duration}")
+        logger.info(f"The mean duration of validation is {mean_duration}")
     
     df[categorical] = df[categorical].fillna(-1).astype('int').astype('str')
     return df
 
+@task
 def train_model(df, categorical):
-
+    logger = get_run_logger()
     train_dicts = df[categorical].to_dict(orient='records')
     dv = DictVectorizer()
     X_train = dv.fit_transform(train_dicts) 
     y_train = df.duration.values
 
-    print(f"The shape of X_train is {X_train.shape}")
-    print(f"The DictVectorizer has {len(dv.feature_names_)} features")
+    logger.info(f"The shape of X_train is {X_train.shape}")
+    logger.info(f"The DictVectorizer has {len(dv.feature_names_)} features")
 
     lr = LinearRegression()
     lr.fit(X_train, y_train)
     y_pred = lr.predict(X_train)
     mse = mean_squared_error(y_train, y_pred, squared=False)
-    print(f"The MSE of training is: {mse}")
+    logger.info(f"The MSE of training is: {mse}")
+    with open("models/linear_regression.b", "wb") as f_out:
+        pickle.dump(lr, f_out)
+    mlflow.log_artifact("models/linear_regression.b", artifact_path="model")
+    with open("models/preprocessor.b", "wb") as f_out:
+        pickle.dump(dv, f_out)
+    mlflow.log_artifact("models/preprocessor.b", artifact_path="preprocessor")
+
     return lr, dv
 
+@task
 def run_model(df, categorical, dv, lr):
+    logger = get_run_logger()
     val_dicts = df[categorical].to_dict(orient='records')
     X_val = dv.transform(val_dicts) 
     y_pred = lr.predict(X_val)
     y_val = df.duration.values
 
     mse = mean_squared_error(y_val, y_pred, squared=False)
-    print(f"The MSE of validation is: {mse}")
+    logger.info(f"The MSE of validation is: {mse}")
     return
 
-def main(train_path: str = './data/fhv_tripdata_2021-01.parquet', 
-           val_path: str = './data/fhv_tripdata_2021-02.parquet'):
+@task
+def get_paths(date: datetime):
+    if date == None:
+        date = datetime.today()
+    train_date = date - timedelta(days=date.day)
+    val_date = train_date - timedelta(days=train_date.day)
+    print(train_date)
+    print(val_date)
+    train_format = train_date.strftime("%Y-%m")
+    val_format = val_date.strftime("%Y-%m")
+    train_path = "./data/fhv_tripdata_"+train_format+".parquet"
+    val_path = "./data/fhv_tripdata_"+val_format+".parquet"
+    return train_path, val_path
+
+@flow
+def main(date: datetime = None):
+    print(date)
+    train_path, val_path = get_paths(date).result()
 
     categorical = ['PUlocationID', 'DOlocationID']
 
@@ -61,7 +95,21 @@ def main(train_path: str = './data/fhv_tripdata_2021-01.parquet',
     df_val_processed = prepare_features(df_val, categorical, False)
 
     # train the model
-    lr, dv = train_model(df_train_processed, categorical)
+    lr, dv = train_model(df_train_processed, categorical).result()
     run_model(df_val_processed, categorical, dv, lr)
 
-main()
+# main(date=datetime.strptime("2021-08-15","%Y-%m-%d"))
+
+from prefect.deployments import DeploymentSpec
+from prefect.orion.schemas.schedules import CronSchedule
+from prefect.flow_runners import SubprocessFlowRunner
+from datetime import timedelta
+
+DeploymentSpec(
+    flow=main,
+    parameters={"date": datetime.strptime("2021-08-15","%Y-%m-%d")},
+    name="model_training",
+    schedule=CronSchedule(cron="0 9 15 * *", timezone="America/New_York"),
+    flow_runner=SubprocessFlowRunner(),
+    tags=["ml"],
+)
