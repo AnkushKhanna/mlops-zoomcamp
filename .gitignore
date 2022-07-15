@@ -1,12 +1,21 @@
 data/
 .ipynb_checkpoints
 .bin
-<<<<<<< HEAD
 venv_mlops/
 *.db
 .DS_Store
 */mlruns/*
 */artifact/*
-=======
 *.db
->>>>>>> 2c11491b0dacad9e4e9c1e4708319d9303c782bb
+
+*.parquet
+*.html
+*.csv
+
+.venv
+venv
+.idea
+**/artifacts/
+**/models/
+
+__pycache__/
